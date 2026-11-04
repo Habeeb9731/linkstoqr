@@ -1,0 +1,31 @@
+{
+  "name": "linkstoqr",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @linkstoqr/web",
+    "typecheck": "tsc --noEmit -p packages/qr-core && tsc --noEmit -p apps/web",
+    "test": "vitest run --root packages/qr-core",
+    "test:e2e": "npm run test:e2e -w @linkstoqr/web"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@resvg/resvg-wasm": "^2.6.2",
+    "@types/node": "^26.6.6",
+    "@types/pngjs": "^6.0.5",
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0",
+    "zxing-wasm": "^3.1.6"
+  }
+}
