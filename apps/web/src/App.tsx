@@ -461,6 +461,7 @@ export function App() {
       <footer class="site-footer">
         <a href="/privacy">Privacy</a>
         <a href="/impressum">Impressum</a>
+        <a href="https://github.com/Habeeb9731/linkstoqr">Source code</a>
       </footer>
     </>
   );
