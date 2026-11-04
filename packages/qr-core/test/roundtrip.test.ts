@@ -133,14 +133,15 @@ describe("output format", () => {
 
 describe("ZIP downloads", () => {
   const values = [LINKS.short, LINKS.query, LINKS.short];
+  const entries = values.map((value) => ({ value, label: value }));
 
   for (const format of ["png", "svg"] as const) {
     it(`every ${format.toUpperCase()} in the ZIP decodes to the link listed for it`, async () => {
-      const files = unzipSync(buildZip(values, DEFAULT_OPTIONS, format));
+      const files = unzipSync(buildZip(entries, DEFAULT_OPTIONS, format));
       const manifest = strFromU8(files["links.csv"]!).trim().split("\r\n").slice(1);
       expect(manifest).toHaveLength(values.length);
       for (const [index, row] of manifest.entries()) {
-        const [file, link] = row.slice(1, -1).split('","') as [string, string];
+        const [file, , , link] = row.slice(1, -1).split('","') as [string, string, string, string];
         expect(link).toBe(values[index]);
         const bytes = files[file]!;
         const png = format === "png" ? bytes : svgToPng(bytes);
@@ -151,12 +152,12 @@ describe("ZIP downloads", () => {
   }
 
   it("keeps duplicate links as separate files", () => {
-    const names = Object.keys(unzipSync(buildZip(values, DEFAULT_OPTIONS, "png")));
+    const names = Object.keys(unzipSync(buildZip(entries, DEFAULT_OPTIONS, "png")));
     expect(new Set(names).size).toBe(values.length + 1);
   });
 
   it("escapes quotes in the CSV", () => {
-    const files = unzipSync(buildZip(['https://example.com/?q="x"'], DEFAULT_OPTIONS, "png"));
+    const files = unzipSync(buildZip([{ value: 'https://example.com/?q="x"', label: 'https://example.com/?q="x"' }], DEFAULT_OPTIONS, "png"));
     expect(strFromU8(files["links.csv"]!)).toContain('"https://example.com/?q=""x"""');
   });
 });

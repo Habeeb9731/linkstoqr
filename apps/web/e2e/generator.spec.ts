@@ -200,6 +200,112 @@ test("the layout has no sideways scrolling on a phone", async ({ page }) => {
   expect(overflow).toBeLessThanOrEqual(0);
 });
 
+test("every content tab produces a code that decodes to the right content", async ({ page }) => {
+  const fillAndCheck = async (tab: string, fields: Record<string, string>, expected: string | RegExp) => {
+    await page.reload();
+    await page.getByRole("button", { name: tab, exact: true }).click();
+    for (const [label, value] of Object.entries(fields)) await page.getByLabel(label, { exact: true }).fill(value);
+    await page.getByRole("button", { name: "Add code" }).click();
+    const card = page.getByTestId("card");
+    await expect(card).toHaveCount(1);
+    const file = await download(page, () => card.getByRole("button", { name: "PNG" }).click());
+    const decoded = await decodeWithZxing(await bytes(file));
+    if (typeof expected === "string") expect(decoded, tab).toBe(expected);
+    else expect(decoded, tab).toMatch(expected);
+    expect(decodeWithJsQr(await bytes(file)), tab).toBe(decoded);
+  };
+
+  await fillAndCheck("App stores", { "Google Play link or app ID": "com.example.app" }, "https://play.google.com/store/apps/details?id=com.example.app");
+  await fillAndCheck("Text", { "Your text": "Hello there" }, "Hello there");
+  await fillAndCheck("Map", { "Address or coordinates": "49.2354, 7.0097" }, "https://www.google.com/maps/search/?api=1&query=49.2354,7.0097");
+  await fillAndCheck("Wi-Fi", { "Network name": "Office", Password: "correct-horse" }, "WIFI:T:WPA;S:Office;P:correct-horse;;");
+  await fillAndCheck("Audio", { "Link to the audio file": "https://example.com/a.mp3" }, "https://example.com/a.mp3");
+  await fillAndCheck("PDF", { "Link to the PDF": "https://example.com/a.pdf" }, "https://example.com/a.pdf");
+  await fillAndCheck("WhatsApp", { "Phone number with country code": "+49 151 2345678", "Pre-filled message (optional)": "Hi" }, "https://wa.me/491512345678?text=Hi");
+  await fillAndCheck("Email", { "Email address": "a@example.com", "Subject (optional)": "Hi" }, "mailto:a@example.com?subject=Hi");
+  await fillAndCheck("Phone", { "Phone number": "+49 30 123456" }, "tel:+4930123456");
+  await fillAndCheck("SMS", { "Phone number": "+49151234567", "Message (optional)": "Hi" }, "SMSTO:+49151234567:Hi");
+  await fillAndCheck("Contact", { "First name": "Ada", "Last name": "Lovelace" }, /^BEGIN:VCARD[\s\S]*FN:Ada Lovelace[\s\S]*END:VCARD$/);
+  await fillAndCheck("Event", { "Event title": "Launch", Starts: "2026-12-31T22:30" }, /^BEGIN:VEVENT[\s\S]*DTSTART:20261231T223000[\s\S]*END:VEVENT$/);
+});
+
+test("a Wi-Fi password stays out of the card, file names and network", async ({ page }) => {
+  await page.waitForLoadState("networkidle");
+  const requests: string[] = [];
+  page.on("request", (request) => {
+    if (!/^(data|blob):/.test(request.url())) requests.push(request.url());
+  });
+  await page.getByRole("button", { name: "Wi-Fi", exact: true }).click();
+  await page.getByLabel("Network name").fill("Office");
+  await page.getByLabel("Password").fill("hunter2-secret");
+  await page.getByRole("button", { name: "Add code" }).click();
+  const card = page.getByTestId("card");
+  await expect(card).toHaveCount(1);
+  expect(await card.innerText()).not.toContain("hunter2");
+  expect(await card.locator("img").getAttribute("alt")).not.toContain("hunter2");
+  const single = await download(page, () => card.getByRole("button", { name: "PNG" }).click());
+  expect(single.suggestedFilename()).toBe("001-wi-fi-office.png");
+  const zip = await download(page, () => page.getByRole("button", { name: "ZIP of PNGs" }).click());
+  const files = unzipSync(await bytes(zip));
+  expect(Object.keys(files).join()).not.toContain("hunter2");
+  expect(new TextDecoder().decode(files["links.csv"]!)).not.toContain("hunter2");
+  expect(requests).toEqual([]);
+});
+
+test("name and category set the file name and ZIP folder, and links combine with other codes", async ({ page }) => {
+  await enterLinks(page, "https://example.com/a");
+  await page.getByLabel("Name (optional)").fill("Spring menu");
+  await page.getByLabel("Category (optional)").fill("Print");
+  await expect(page.getByTestId("card").first()).toContainText("Spring menu");
+
+  await page.getByRole("button", { name: "Text", exact: true }).click();
+  await expect(page.getByLabel("Name (optional)")).toHaveValue("");
+  await page.getByLabel("Your text").fill("Hello");
+  await page.getByLabel("Name (optional)").fill("Greeting");
+  await page.getByRole("button", { name: "Add code" }).click();
+  await expect(page.getByTestId("card")).toHaveCount(2);
+  await expect(page.getByTestId("card").first()).toContainText("Spring menu");
+
+  const zip = await download(page, () => page.getByRole("button", { name: "ZIP of PNGs" }).click());
+  const names = Object.keys(unzipSync(await bytes(zip)));
+  expect(names).toContain("print/001-spring-menu.png");
+  expect(names).toContain("002-greeting.png");
+});
+
+test("an added code can be removed, and invalid forms explain what is wrong", async ({ page }) => {
+  await page.getByRole("button", { name: "Phone", exact: true }).click();
+  await page.getByRole("button", { name: "Add code" }).click();
+  await expect(page.getByRole("alert")).toContainText("valid phone number");
+  await expect(page.getByTestId("card")).toHaveCount(0);
+
+  await page.getByLabel("Phone number").fill("+49 30 123456");
+  await page.getByRole("button", { name: "Add code" }).click();
+  await expect(page.getByTestId("card")).toHaveCount(1);
+  await page.getByRole("button", { name: /^Remove/ }).click();
+  await expect(page.getByTestId("card")).toHaveCount(0);
+  await expect(page.getByTestId("status")).toHaveText("Your codes will appear here.");
+});
+
+test("added text too long for a higher error correction level is reported, not fatal", async ({ page }) => {
+  await page.getByRole("radio", { name: /Low/ }).check({ force: true });
+  await page.getByRole("button", { name: "Text", exact: true }).click();
+  await page.getByLabel("Your text").fill("x".repeat(2000));
+  await page.getByRole("button", { name: "Add code" }).click();
+  await expect(page.getByTestId("card")).toHaveCount(1);
+  await page.getByRole("radio", { name: /High/ }).check({ force: true });
+  await expect(page.getByTestId("errors")).toContainText("Too long");
+  await expect(page.getByTestId("card")).toHaveCount(0);
+});
+
+test("the legal pages have no placeholders left", async ({ page }) => {
+  for (const path of ["/impressum", "/privacy"]) {
+    await page.goto(path);
+    const content = await page.content();
+    expect(content).not.toMatch(/LEGAL_NAME|FULL_ADDRESS|CONTACT_EMAIL|STREET_AND_NUMBER|POSTCODE_AND_CITY/);
+    expect(content).toContain("Mainzer Str. 115");
+  }
+});
+
 test("legal pages are reachable", async ({ page }) => {
   await page.getByRole("link", { name: "Privacy" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Privacy" })).toBeVisible();

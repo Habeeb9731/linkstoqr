@@ -50,16 +50,23 @@ export function parseLinks(text: string): LinkLine[] {
   return result;
 }
 
-/** Builds a safe, unique-by-position file name without an extension. */
-export function fileBaseName(value: string, position: number, total: number): string {
-  const width = Math.max(3, String(total).length);
-  const prefix = String(position).padStart(width, "0");
-  const readable = value
+/** Lowercase letters, digits and hyphens only, so the result is always a safe path part. */
+export function slugify(text: string): string {
+  return text
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/^https?:\/\//i, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60)
     .replace(/-+$/g, "");
+}
+
+/** Builds a safe, unique-by-position file name without an extension. */
+export function fileBaseName(text: string, position: number, total: number): string {
+  const width = Math.max(3, String(total).length);
+  const prefix = String(position).padStart(width, "0");
+  const readable = slugify(text);
   return readable ? `${prefix}-${readable}` : prefix;
 }

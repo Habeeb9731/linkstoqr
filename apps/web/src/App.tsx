@@ -13,12 +13,14 @@ import {
   type QrOptions,
 } from "@linkstoqr/qr-core";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import type { ResultItem, WorkerRequest, WorkerResponse } from "./protocol.ts";
+import { CATEGORY_SUGGESTIONS, CONTENT_FORMS, type ContentForm, type Field } from "./forms.ts";
+import type { CustomItem, ResultItem, WorkerRequest, WorkerResponse } from "./protocol.ts";
 
 const SAMPLE = "https://example.com\nexample.org/menu\nhttps://example.net/tickets?event=spring";
 
 const PREVIEW_BATCH = 60;
 const MAX_LISTED_ERRORS = 100;
+const LINK_TAB = "link";
 
 const ECC_CHOICES: { value: Ecc; label: string; hint: string }[] = [
   { value: "L", label: "Low", hint: "7%" },
@@ -41,21 +43,27 @@ function clamp(value: number, min: number, max: number, fallback: number) {
 }
 
 export function App() {
+  const [tab, setTab] = useState(LINK_TAB);
   const [text, setText] = useState("");
+  const [custom, setCustom] = useState<CustomItem[]>([]);
+  const [formValues, setFormValues] = useState<Record<string, Record<string, string>>>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState("");
   const [options, setOptions] = useState<QrOptions>(DEFAULT_OPTIONS);
   const [sizeInput, setSizeInput] = useState(String(DEFAULT_OPTIONS.size));
   const [items, setItems] = useState<ResultItem[]>([]);
-  // The level `items` were checked against. Links that fit at Low may not fit at High,
-  // so previews must not use a new level until the worker has re-checked them.
+  // The level `items` were checked against. Content that fits at Low may not fit at High,
+  // so previews must not use a new level until the worker has re-checked it.
   const [checkedEcc, setCheckedEcc] = useState<Ecc>(DEFAULT_OPTIONS.ecc);
   const [analyzing, setAnalyzing] = useState(false);
   const [zipStatus, setZipStatus] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-
   const [previewCount, setPreviewCount] = useState(PREVIEW_BATCH);
   const moreSentinel = useRef<HTMLDivElement>(null);
 
   const worker = useRef<Worker | undefined>(undefined);
+  const nextCustomId = useRef(1);
   const latestAnalyzeJob = useRef(0);
   const latestZipJob = useRef(0);
   const zipFormat = useRef<ImageFormat>("png");
@@ -87,18 +95,38 @@ export function App() {
 
   const send = (request: WorkerRequest) => worker.current?.postMessage(request);
 
+  // Name and category apply to the pasted links as a group, but only while on that tab's content.
+  const linkName = useRef("");
+  const linkCategory = useRef("");
+  if (tab === LINK_TAB) {
+    linkName.current = name;
+    linkCategory.current = category;
+  }
+
   useEffect(() => {
     const jobId = ++latestAnalyzeJob.current;
     setFailure(null);
-    if (!text.trim()) {
+    if (!text.trim() && custom.length === 0) {
       setItems([]);
       setAnalyzing(false);
       return;
     }
     setAnalyzing(true);
-    const timer = setTimeout(() => send({ type: "analyze", jobId, text, ecc: options.ecc }), 150);
+    const timer = setTimeout(
+      () =>
+        send({
+          type: "analyze",
+          jobId,
+          text,
+          ecc: options.ecc,
+          linkName: linkName.current.trim(),
+          linkCategory: linkCategory.current.trim(),
+          custom,
+        }),
+      150,
+    );
     return () => clearTimeout(timer);
-  }, [text, options.ecc]);
+  }, [text, options.ecc, custom, tab === LINK_TAB ? name : "", tab === LINK_TAB ? category : ""]);
 
   const update = (change: Partial<QrOptions>) => setOptions((current) => ({ ...current, ...change }));
   const commitSize = () => {
@@ -111,11 +139,11 @@ export function App() {
   const invalidCount = items.length - valid.length;
   const warnings = useMemo(() => designWarnings(options), [options]);
   const cardOptions = useMemo(() => ({ ...options, ecc: checkedEcc }), [options, checkedEcc]);
-
   const errors = useMemo(() => items.filter((item) => item.error), [items]);
   const hasMorePreviews = previewCount < valid.length;
+  const activeForm = CONTENT_FORMS.find((form) => form.id === tab);
 
-  // Only what's on screen is rendered. Every link is still in the ZIP.
+  // Only what's on screen is rendered. Every code is still in the ZIP.
   useEffect(() => {
     const sentinel = moreSentinel.current;
     if (!sentinel || !hasMorePreviews) return;
@@ -136,10 +164,40 @@ export function App() {
     send({
       type: "zip",
       jobId: ++latestZipJob.current,
-      values: valid.map((item) => item.value!),
+      entries: valid.map((item) => ({ value: item.value!, label: item.label, name: item.name, category: item.category })),
       options,
       format,
     });
+  };
+
+  const switchTab = (id: string) => {
+    setTab(id);
+    setFormError(null);
+    setName(id === LINK_TAB ? linkName.current : "");
+    setCategory(id === LINK_TAB ? linkCategory.current : "");
+  };
+
+  const addFromForm = (form: ContentForm, event: Event) => {
+    event.preventDefault();
+    const result = form.build(formValues[form.id] ?? {});
+    if ("error" in result) {
+      setFormError(result.error);
+      return;
+    }
+    const added = result.items.map((item) => ({
+      ...item,
+      id: nextCustomId.current++,
+      name: name.trim() || undefined,
+      category: category.trim() || undefined,
+    }));
+    setCustom((current) => [...current, ...added]);
+    setFormValues((current) => ({ ...current, [form.id]: {} }));
+    setFormError(null);
+    setName("");
+  };
+
+  const setFieldValue = (formId: string, key: string, value: string) => {
+    setFormValues((current) => ({ ...current, [formId]: { ...current[formId], [key]: value } }));
   };
 
   return (
@@ -159,33 +217,71 @@ export function App() {
         <section class="intro">
           <h1>Paste your links. Get your QR codes.</h1>
           <p>
-            Your links stay in this browser. Each code contains the link itself, so it keeps working even if this
-            site goes away.
+            Or make codes for Wi-Fi, contacts, WhatsApp, maps and more. Everything stays in this browser, and each code
+            holds your content directly, so it keeps working even if this site goes away.
           </p>
         </section>
 
+        <nav class="content-tabs" aria-label="What should the code contain?">
+          <button type="button" aria-pressed={tab === LINK_TAB} onClick={() => switchTab(LINK_TAB)}>
+            Links
+          </button>
+          {CONTENT_FORMS.map((form) => (
+            <button key={form.id} type="button" aria-pressed={tab === form.id} onClick={() => switchTab(form.id)}>
+              {form.label}
+            </button>
+          ))}
+        </nav>
+
         <div class="workspace">
-          <section class="panel input-panel" aria-label="Links and options">
-            <div class="field">
-              <div class="field-heading">
-                <label for="links">Links, one per line</label>
-                {!text && (
-                  <button type="button" class="link-button" onClick={() => setText(SAMPLE)}>
-                    Try an example
-                  </button>
+          <section class="panel input-panel" aria-label="Content and options">
+            {activeForm ? (
+              <form key={activeForm.id} class="content-form" onSubmit={(event) => addFromForm(activeForm, event)} noValidate>
+                {activeForm.note && <p class="note">{activeForm.note}</p>}
+                {activeForm.fields.map((field) => (
+                  <FormField
+                    key={field.key}
+                    field={field}
+                    formId={activeForm.id}
+                    values={formValues[activeForm.id] ?? {}}
+                    onChange={(value) => setFieldValue(activeForm.id, field.key, value)}
+                  />
+                ))}
+                <NameAndCategory name={name} category={category} onName={setName} onCategory={setCategory} />
+                {formError && (
+                  <p class="form-error" role="alert">
+                    {formError}
+                  </p>
                 )}
+                <button type="submit" class="primary add-button">
+                  Add code
+                </button>
+              </form>
+            ) : (
+              <div class="content-form">
+                <div class="field">
+                  <div class="field-heading">
+                    <label for="links">Links, one per line</label>
+                    {!text && (
+                      <button type="button" class="link-button" onClick={() => setText(SAMPLE)}>
+                        Try an example
+                      </button>
+                    )}
+                  </div>
+                  <textarea
+                    id="links"
+                    value={text}
+                    rows={9}
+                    spellcheck={false}
+                    autocapitalize="off"
+                    autocomplete="off"
+                    placeholder={"https://example.com/menu\nexample.com/tickets"}
+                    onInput={(event) => setText(event.currentTarget.value)}
+                  />
+                </div>
+                <NameAndCategory name={name} category={category} onName={setName} onCategory={setCategory} />
               </div>
-              <textarea
-                id="links"
-                value={text}
-                rows={9}
-                spellcheck={false}
-                autocapitalize="off"
-                autocomplete="off"
-                placeholder={"https://example.com/menu\nexample.com/tickets"}
-                onInput={(event) => setText(event.currentTarget.value)}
-              />
-            </div>
+            )}
 
             <div class="options">
               <div class="field">
@@ -295,9 +391,14 @@ export function App() {
             {errors.length > 0 && (
               <ul class="errors" data-testid="errors">
                 {errors.slice(0, MAX_LISTED_ERRORS).map((item) => (
-                  <li key={item.line}>
-                    <strong>Line {item.line}:</strong> {item.error}
-                    <code>{item.input.length > 80 ? `${item.input.slice(0, 80)}…` : item.input}</code>
+                  <li key={item.key}>
+                    <strong>{item.line ? `Line ${item.line}` : item.label}:</strong> {item.error}
+                    {item.line && <code>{item.label.length > 80 ? `${item.label.slice(0, 80)}…` : item.label}</code>}
+                    {item.customId !== undefined && (
+                      <button type="button" class="link-button" onClick={() => setCustom((c) => c.filter((x) => x.id !== item.customId))}>
+                        Remove
+                      </button>
+                    )}
                   </li>
                 ))}
                 {errors.length > MAX_LISTED_ERRORS && (
@@ -310,7 +411,18 @@ export function App() {
               <>
                 <ul class="grid">
                   {valid.slice(0, previewCount).map((item, index) => (
-                    <Card key={item.line} item={item} position={index + 1} total={valid.length} options={cardOptions} />
+                    <Card
+                      key={item.key}
+                      item={item}
+                      position={index + 1}
+                      total={valid.length}
+                      options={cardOptions}
+                      onRemove={
+                        item.customId === undefined
+                          ? undefined
+                          : () => setCustom((current) => current.filter((entry) => entry.id !== item.customId))
+                      }
+                    />
                   ))}
                 </ul>
                 {hasMorePreviews && (
@@ -335,10 +447,10 @@ export function App() {
 
         <ul class="promises">
           <li>
-            <strong>Private</strong> Codes are made on your device, and links never reach our servers.
+            <strong>Private</strong> Codes are made on your device, and nothing you enter reaches our servers.
           </li>
           <li>
-            <strong>Permanent</strong> Codes hold your link directly, with no redirect that can expire.
+            <strong>Permanent</strong> Every code here is static, with no redirect that can expire.
           </li>
           <li>
             <strong>Free</strong> No ads, watermarks, tracking or limits on codes.
@@ -349,15 +461,96 @@ export function App() {
       <footer class="site-footer">
         <a href="/privacy">Privacy</a>
         <a href="/impressum">Impressum</a>
-        <a href="https://github.com/Habeeb9731/linkstoqr">Source code</a>
       </footer>
     </>
   );
 }
 
-function Card(props: { item: ResultItem; position: number; total: number; options: QrOptions }) {
-  const { item, position, total, options } = props;
+function NameAndCategory(props: {
+  name: string;
+  category: string;
+  onName: (value: string) => void;
+  onCategory: (value: string) => void;
+}) {
+  return (
+    <div class="name-fields">
+      <div class="field">
+        <label for="code-name">Name (optional)</label>
+        <input id="code-name" type="text" value={props.name} onInput={(event) => props.onName(event.currentTarget.value)} />
+      </div>
+      <div class="field">
+        <label for="code-category">Category (optional)</label>
+        <input
+          id="code-category"
+          type="text"
+          list="category-suggestions"
+          value={props.category}
+          onInput={(event) => props.onCategory(event.currentTarget.value)}
+        />
+        <datalist id="category-suggestions">
+          {CATEGORY_SUGGESTIONS.map((suggestion) => (
+            <option key={suggestion} value={suggestion} />
+          ))}
+        </datalist>
+      </div>
+      <p class="hint">The name sets the file name. The category becomes a folder in the ZIP.</p>
+    </div>
+  );
+}
+
+function FormField(props: {
+  field: Field;
+  formId: string;
+  values: Record<string, string>;
+  onChange: (value: string) => void;
+}) {
+  const { field, formId, values, onChange } = props;
+  const id = `${formId}-${field.key}`;
+  const value = values[field.key] ?? field.initial ?? "";
+
+  if (field.showIf && (values[field.showIf.key] ?? "") === field.showIf.notValue) return null;
+
+  if (field.type === "checkbox") {
+    return (
+      <label class="checkbox" for={id}>
+        <input id={id} type="checkbox" checked={value === "true"} onChange={(event) => onChange(event.currentTarget.checked ? "true" : "")} />
+        {field.label}
+      </label>
+    );
+  }
+
+  return (
+    <div class="field">
+      <label for={id}>{field.label}</label>
+      {field.type === "textarea" ? (
+        <textarea id={id} rows={3} class="short" value={value} placeholder={field.placeholder} onInput={(event) => onChange(event.currentTarget.value)} />
+      ) : field.type === "select" ? (
+        <select id={id} value={value} onChange={(event) => onChange(event.currentTarget.value)}>
+          {field.options!.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          id={id}
+          type={(field.type ?? "text") as "text"}
+          value={value}
+          placeholder={field.placeholder}
+          autocomplete="off"
+          spellcheck={false}
+          onInput={(event) => onChange(event.currentTarget.value)}
+        />
+      )}
+    </div>
+  );
+}
+
+function Card(props: { item: ResultItem; position: number; total: number; options: QrOptions; onRemove?: () => void }) {
+  const { item, position, total, options, onRemove } = props;
   const value = item.value!;
+
   const preview = useMemo(() => {
     const matrix = encodeQr(value, options.ecc);
     const svg = renderSvg(matrix, options);
@@ -368,16 +561,19 @@ function Card(props: { item: ResultItem; position: number; total: number; option
   const download = (format: ImageFormat) => {
     const bytes = renderImage(value, options, format);
     const type = format === "png" ? "image/png" : "image/svg+xml";
-    saveBlob(new Blob([bytes.slice().buffer as ArrayBuffer], { type }), `${fileBaseName(value, position, total)}.${format}`);
+    const base = fileBaseName(item.name || item.label, position, total);
+    saveBlob(new Blob([bytes.slice().buffer as ArrayBuffer], { type }), `${base}.${format}`);
   };
+
+  const title = item.name || item.label;
 
   return (
     <li class="card" data-testid="card">
       <div class="preview">
-        <img src={preview.src} alt={`QR code for ${value}`} width={200} height={200} />
+        <img src={preview.src} alt={`QR code: ${title}`} width={200} height={200} />
       </div>
-      <p class="card-link" title={value}>
-        {value}
+      <p class="card-link" title={title}>
+        {title}
       </p>
       <div class="card-meta">
         {preview.outputSize > options.size ? (
@@ -385,6 +581,7 @@ function Card(props: { item: ResultItem; position: number; total: number; option
         ) : (
           <span>
             {item.modules}×{item.modules} modules
+            {item.category ? ` · ${item.category}` : ""}
           </span>
         )}
       </div>
@@ -395,6 +592,11 @@ function Card(props: { item: ResultItem; position: number; total: number; option
         <button type="button" onClick={() => download("svg")}>
           SVG
         </button>
+        {onRemove && (
+          <button type="button" class="remove" aria-label={`Remove ${title}`} onClick={onRemove}>
+            ×
+          </button>
+        )}
       </div>
     </li>
   );
