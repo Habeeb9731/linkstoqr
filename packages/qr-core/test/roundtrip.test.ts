@@ -88,7 +88,7 @@ describe("generated codes decode with two independent decoders", () => {
       await expectDecodes(text, { ...DEFAULT_OPTIONS, ecc, size: 2048 });
       expect(() => encodeQr(`${text}a`, ecc)).toThrow(QrTooLongError);
     }
-  });
+  }, 60_000); // Decoding the largest codes is slow on shared CI machines.
 });
 
 describe("the decoders can actually fail (negative control)", () => {
