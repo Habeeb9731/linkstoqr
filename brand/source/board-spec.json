@@ -1,0 +1,35 @@
+{
+  "brand": "Links to QR",
+  "tagline": "Paste a link. Get a QR code.",
+  "brief": "A free QR code generator that runs entirely in the browser: no sign-up, no tracking, and static codes that keep working even if the site goes away. It should feel honest, private, quick and durable, without the category's chain links, arrows, padlocks and phones.",
+  "adjectives": ["honest", "private", "quick", "durable"],
+  "criteria": "Success: owns one simple idea, reads at 16 px in a browser tab, works in one colour, and stands apart from blue QR generators.",
+  "mockups": ["website", "favicon-tab", "readme", "sticker", "social", "app-icon"],
+  "nav": ["Link", "Wi-Fi", "Contact", "Source code"],
+  "brand_color": "#E8431A",
+  "greyscale": false,
+  "final": true,
+  "designer": "Links to QR",
+  "concepts": [
+    {
+      "name": "Escape Q",
+      "symbol": "linkstoqr-symbol.svg",
+      "lockup": "linkstoqr-horizontal.svg",
+      "stacked": "linkstoqr-stacked.svg",
+      "symbol_on_tile": "symbol/linkstoqr-symbol-white.svg",
+      "stacked_on_tile": "stacked/linkstoqr-stacked-white.svg",
+      "symbol_on_dark": "linkstoqr-symbol-on-dark.svg",
+      "lockup_on_dark": "linkstoqr-horizontal-on-dark.svg",
+      "stacked_on_dark": "linkstoqr-stacked-on-dark.svg",
+      "idea": "A QR code's corner eye whose centre square steps out through the corner, becoming the tail of a Q.",
+      "rationale": [
+        "Built from the QR code's own finder pattern, not a picture of a phone or a chain",
+        "The escaping square is what the product does: your content leaves as a code that works anywhere",
+        "The same square is the Q's tail in the wordmark, so symbol and name share one detail",
+        "Escape Orange stands apart from the category's blues and keeps 3.6 : 1 or more on white, paper and dark"
+      ]
+    }
+  ],
+  "recommendation": "Escape Q in Ink and Escape Orange, with Inter Bold outlined for the wordmark.",
+  "next_steps": ["Swap the site's favicon and header mark", "Use the guidelines for new pages and social images"]
+}
