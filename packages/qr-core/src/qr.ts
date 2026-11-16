@@ -1,15 +1,28 @@
+import { isStyled, renderStyledSvg, type CornerStyle, type DotStyle, type FrameStyle, type QrLogo } from "./style.ts";
 import qrcodegen from "./vendor/qrcodegen.ts";
 
 export type Ecc = "L" | "M" | "Q" | "H";
 
 export interface QrOptions {
-  /** Requested image width and height in pixels. */
+  /** Requested image width (and height, without a frame) in pixels. */
   size: number;
   /** Quiet zone around the code, in modules. */
   margin: number;
   foreground: string;
   background: string;
   ecc: Ecc;
+  /** Optional styling. Leaving all of these out gives the plain code, drawn exactly as before. */
+  dots?: DotStyle;
+  corners?: CornerStyle;
+  /** Colour of the three corner patterns; defaults to `foreground`. */
+  cornerColor?: string | null;
+  frame?: FrameStyle;
+  frameText?: string;
+  /** Colour of the frame; defaults to `foreground`. */
+  frameColor?: string | null;
+  logo?: QrLogo | null;
+  /** Logo width as a fraction of the code's width; see LOGO_SIZE_RANGE. */
+  logoSize?: number;
 }
 
 export const DEFAULT_OPTIONS: QrOptions = {
@@ -80,6 +93,7 @@ export function layoutQr(matrix: QrMatrix, options: Pick<QrOptions, "size" | "ma
 }
 
 export function renderSvg(matrix: QrMatrix, options: QrOptions): string {
+  if (isStyled(options)) return renderStyledSvg(matrix, options);
   const { outputSize, scale, offset } = layoutQr(matrix, options);
   const foreground = assertHexColor(options.foreground);
   const background = assertHexColor(options.background);
@@ -135,6 +149,12 @@ export function designWarnings(options: QrOptions): string[] {
   }
   if (options.margin < 4) {
     warnings.push("Margins under 4 can fail unless the code sits on a plain, light area.");
+  }
+  if (options.cornerColor && contrastRatio(assertHexColor(options.cornerColor), background) < 4) {
+    warnings.push("Low contrast between the corners and the background. Phones find codes by their corners.");
+  }
+  if (options.logo && (options.ecc === "L" || options.ecc === "M")) {
+    warnings.push("A logo hides part of the code. Use Quartile or High error correction so it still scans.");
   }
   return warnings;
 }

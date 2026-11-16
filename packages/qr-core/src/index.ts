@@ -2,4 +2,5 @@ export * from "./content.ts";
 export * from "./links.ts";
 export * from "./png.ts";
 export * from "./qr.ts";
+export * from "./style.ts";
 export * from "./zip.ts";
