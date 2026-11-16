@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Download, type Page } from "@playwright/test";
 import { unzipSync } from "fflate";
+import { PNG } from "pngjs";
 import { decodeWithJsQr, decodeWithZxing, prepareDecoders, svgToPng } from "../../../packages/qr-core/test/decode.ts";
 
 test.beforeAll(prepareDecoders);
@@ -8,7 +9,24 @@ test.beforeAll(prepareDecoders);
 const bytes = async (download: Download) => new Uint8Array(readFileSync(await download.path()));
 
 async function enterLinks(page: Page, links: string) {
+  if (!links.includes("\n")) {
+    await page.getByLabel("Your link").fill(links);
+    return;
+  }
+  await page.getByRole("button", { name: "Add multiple links" }).click();
   await page.getByLabel("Links, one per line").fill(links);
+}
+
+async function openDesignTab(page: Page, name: "Frame" | "Logo" | "Colour & shape" | "Size & quality") {
+  await page.getByRole("tab", { name }).click();
+}
+
+async function pasteIntoLinkField(page: Page, pasted: string) {
+  await page.getByLabel("Your link").evaluate((field, text) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text", text);
+    field.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+  }, pasted);
 }
 
 async function download(page: Page, action: () => Promise<void>) {
@@ -91,6 +109,108 @@ test("the preview and both single downloads decode to the link", async ({ page }
   expect(await decodeWithZxing(svgToPng(await bytes(svg)))).toBe(link);
 });
 
+test("one link is the default, and several can be added", async ({ page }) => {
+  await expect(page.getByLabel("Your link")).toHaveJSProperty("tagName", "INPUT");
+  await page.getByLabel("Your link").fill("https://example.com/a");
+  await page.getByRole("button", { name: "Add multiple links" }).click();
+
+  const box = page.getByLabel("Links, one per line");
+  await expect(box).toHaveValue("https://example.com/a");
+  await box.fill("https://example.com/a\nhttps://example.com/b");
+  await expect(page.getByTestId("card")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Use a single link" })).toHaveCount(0);
+
+  await box.fill("https://example.com/a\n");
+  await page.getByRole("button", { name: "Use a single link" }).click();
+  await expect(page.getByLabel("Your link")).toHaveValue("https://example.com/a");
+  await expect(page.getByTestId("card")).toHaveCount(1);
+});
+
+test("pasting several links into the single field keeps them separate", async ({ page }) => {
+  await pasteIntoLinkField(page, "https://example.com/a\r\nhttps://example.com/b\n");
+  await expect(page.getByLabel("Links, one per line")).toBeFocused();
+  await expect(page.getByTestId("card")).toHaveCount(2);
+});
+
+/** A small RGBA PNG logo: an orange square with transparent corners. */
+function logoPng(): Buffer {
+  const png = new PNG({ width: 48, height: 48 });
+  for (let y = 0; y < 48; y++) {
+    for (let x = 0; x < 48; x++) {
+      const i = (y * 48 + x) * 4;
+      const inside = Math.hypot(x - 23.5, y - 23.5) < 22;
+      png.data.set(inside ? [232, 67, 26, 255] : [0, 0, 0, 0], i);
+    }
+  }
+  return PNG.sync.write(png);
+}
+
+test("a customised code with a frame, logo and shapes still decodes", async ({ page }) => {
+  const link = "https://example.com/menu?table=12";
+  await enterLinks(page, link);
+
+  await openDesignTab(page, "Frame");
+  await page.getByRole("radio", { name: "Border" }).click();
+  await page.getByLabel("Frame text").fill("Scan for the menu");
+
+  await openDesignTab(page, "Logo");
+  await page.getByLabel("Upload logo").setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: logoPng() });
+  await expect(page.getByRole("img", { name: "Your logo" })).toBeVisible();
+  await expect(page.getByText("Error correction is now High")).toBeVisible();
+
+  await openDesignTab(page, "Colour & shape");
+  await page.getByRole("radio", { name: "Dots" }).click();
+  await page.getByRole("radio", { name: "Circle" }).click();
+  await page.getByLabel("Different colour for the corners").check();
+
+  await openDesignTab(page, "Size & quality");
+  await expect(page.getByRole("radio", { name: /High/ })).toBeChecked();
+
+  const card = page.getByTestId("card");
+  const png = await download(page, () => card.getByRole("button", { name: "PNG" }).click());
+  const pngBytes = await bytes(png);
+  const image = PNG.sync.read(Buffer.from(pngBytes));
+  expect(image.height, "the frame's label makes the image taller").toBeGreaterThan(image.width);
+  expect(decodeWithJsQr(pngBytes)).toBe(link);
+  expect(await decodeWithZxing(pngBytes)).toBe(link);
+
+  const svg = await download(page, () => card.getByRole("button", { name: "SVG" }).click());
+  const svgText = new TextDecoder().decode(await bytes(svg));
+  expect(svgText).toContain("data:image/png;base64,");
+  expect(decodeWithJsQr(svgToPng(svgText))).toBe(link);
+  expect(await decodeWithZxing(svgToPng(svgText))).toBe(link);
+
+  // Removing the logo brings the plain middle back.
+  await openDesignTab(page, "Logo");
+  await page.getByRole("button", { name: "Remove logo" }).click();
+  await expect(page.getByLabel("Upload logo")).toBeAttached();
+});
+
+test("a common or brand icon can be used as the logo, and the code still decodes", async ({ page }) => {
+  const link = "https://wa.me/491512345678";
+  await enterLinks(page, link);
+  await openDesignTab(page, "Logo");
+
+  await page.getByRole("radiogroup", { name: "Common icons" }).getByRole("radio", { name: "Website" }).click();
+  await expect(page.getByRole("radio", { name: "Website" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByText("Error correction is now High")).toBeVisible();
+
+  await page.getByRole("radiogroup", { name: "Brands" }).getByRole("radio", { name: "WhatsApp" }).click();
+  await expect(page.getByRole("radio", { name: "WhatsApp" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("radio", { name: "Website" })).toHaveAttribute("aria-checked", "false");
+  await expect(page.getByRole("radiogroup", { name: "Brands" }).getByRole("radio")).toHaveCount(18);
+
+  const card = page.getByTestId("card");
+  const png = await bytes(await download(page, () => card.getByRole("button", { name: "PNG" }).click()));
+  expect(decodeWithJsQr(png)).toBe(link);
+  expect(await decodeWithZxing(png)).toBe(link);
+  const svg = new TextDecoder().decode(await bytes(await download(page, () => card.getByRole("button", { name: "SVG" }).click())));
+  expect(decodeWithJsQr(svgToPng(svg))).toBe(link);
+
+  await page.getByRole("button", { name: "Remove logo" }).click();
+  await expect(page.getByRole("radio", { name: "WhatsApp" })).toHaveAttribute("aria-checked", "false");
+});
+
 for (const [button, format] of [["ZIP of PNGs", "png"], ["ZIP of SVGs", "svg"]] as const) {
   test(`${button} contains a working code for every link`, async ({ page }) => {
     const links = ["https://example.com/1", "https://example.com/2", "https://example.com/3"];
@@ -110,12 +230,14 @@ for (const [button, format] of [["ZIP of PNGs", "png"], ["ZIP of SVGs", "svg"]] 
 test("the options change the downloaded code", async ({ page }) => {
   const link = "https://example.com/options";
   await enterLinks(page, link);
+  await openDesignTab(page, "Size & quality");
   await page.getByLabel("Image size (px)").fill("512");
   await page.getByLabel("Image size (px)").blur();
+  await page.getByLabel(/^Margin/).fill("8");
   await page.getByRole("radio", { name: /High/ }).check({ force: true });
+  await openDesignTab(page, "Colour & shape");
   await page.getByLabel("Code colour").fill("#0b2545");
   await page.getByLabel("Background").fill("#fff8e7");
-  await page.getByLabel(/^Margin/).fill("8");
 
   const card = page.getByTestId("card");
   const file = await download(page, () => card.getByRole("button", { name: "SVG" }).click());
@@ -139,6 +261,7 @@ test("bad lines are explained without blocking the good ones", async ({ page }) 
 
 test("poor designs get a warning but are still allowed", async ({ page }) => {
   await enterLinks(page, "https://example.com");
+  await openDesignTab(page, "Colour & shape");
   await page.getByLabel("Code colour").fill("#dddddd");
   await expect(page.getByTestId("warnings")).toContainText("Low colour contrast");
   await expect(page.getByTestId("card")).toHaveCount(1);
@@ -146,6 +269,7 @@ test("poor designs get a warning but are still allowed", async ({ page }) => {
 
 test("raising error correction past a link's capacity reports it instead of crashing", async ({ page }) => {
   await enterLinks(page, `https://example.com/${"x".repeat(2000)}`);
+  await openDesignTab(page, "Size & quality");
   await page.getByRole("radio", { name: /Low/ }).check({ force: true });
   await expect(page.getByTestId("card")).toHaveCount(1);
   await page.getByRole("radio", { name: /High/ }).check({ force: true });
@@ -156,6 +280,7 @@ test("raising error correction past a link's capacity reports it instead of cras
 
 test("a large batch of 5,000 links works and the page stays responsive", async ({ page }) => {
   const links = Array.from({ length: 5000 }, (_, i) => `https://example.com/item/${i}`);
+  await page.getByRole("button", { name: "Add multiple links" }).click();
   // Measured inside the page: Playwright's own fill() is far slower than the app on text this large.
   const timing = await page.evaluate(async (text) => {
     let longestStall = 0;
@@ -245,6 +370,13 @@ test("a Wi-Fi password stays out of the card, file names and network", async ({ 
   expect(await card.locator("img").getAttribute("alt")).not.toContain("hunter2");
   const single = await download(page, () => card.getByRole("button", { name: "PNG" }).click());
   expect(single.suggestedFilename()).toBe("001-wi-fi-office.png");
+
+  // The ZIP buttons only appear once there is more than one code.
+  await expect(page.getByRole("button", { name: "ZIP of PNGs" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Text", exact: true }).click();
+  await page.getByLabel("Your text").fill("Welcome");
+  await page.getByRole("button", { name: "Add code" }).click();
+  await expect(card).toHaveCount(2);
   const zip = await download(page, () => page.getByRole("button", { name: "ZIP of PNGs" }).click());
   const files = unzipSync(await bytes(zip));
   expect(Object.keys(files).join()).not.toContain("hunter2");
@@ -287,6 +419,7 @@ test("an added code can be removed, and invalid forms explain what is wrong", as
 });
 
 test("added text too long for a higher error correction level is reported, not fatal", async ({ page }) => {
+  await openDesignTab(page, "Size & quality");
   await page.getByRole("radio", { name: /Low/ }).check({ force: true });
   await page.getByRole("button", { name: "Text", exact: true }).click();
   await page.getByLabel("Your text").fill("x".repeat(2000));
@@ -304,6 +437,46 @@ test("the legal pages have no placeholders left", async ({ page }) => {
     expect(content).not.toMatch(/LEGAL_NAME|FULL_ADDRESS|CONTACT_EMAIL|STREET_AND_NUMBER|POSTCODE_AND_CITY/);
     expect(content).toContain("Mainzer Str. 115");
   }
+});
+
+test("the page is light by default, even on a dark system, and remembers a switch to dark", async ({ browser }) => {
+  const context = await browser.newContext({ colorScheme: "dark" });
+  const page = await context.newPage();
+  await page.goto("/");
+  const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  expect(await background()).toBe("rgb(247, 246, 242)");
+
+  await page.getByRole("button", { name: "Switch to dark mode" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  expect(await background()).toBe("rgb(18, 19, 21)");
+  await page.getByRole("button", { name: "Switch to light mode" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await context.close();
+});
+
+test("quick links open the generator on the right kind of code", async ({ page }) => {
+  await page.getByRole("button", { name: /Wi-Fi codes/ }).click();
+  await expect(page.getByRole("button", { name: "Wi-Fi", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Network name")).toBeVisible();
+
+  await page.getByRole("button", { name: /Many links at once/ }).click();
+  await expect(page.getByLabel("Links, one per line")).toBeVisible();
+});
+
+test("text uses the self-hosted Inter, in Regular and Medium only", async ({ page }) => {
+  await page.evaluate(() => document.fonts.ready);
+  expect(await page.evaluate(() => document.fonts.check('400 16px "Inter"') && document.fonts.check('500 16px "Inter"'))).toBe(true);
+  const loaded = await page.evaluate(() => [...document.fonts].filter((f) => f.status === "loaded").map((f) => `${f.family.replaceAll('"', "")} ${f.weight}`));
+  expect(loaded).toEqual(expect.arrayContaining(["Inter 400", "Inter 500"]));
+  const heavy = await page.evaluate(() =>
+    [...document.querySelectorAll("body *")]
+      .filter((el) => el.textContent?.trim() && Number(getComputedStyle(el).fontWeight) > 500)
+      .map((el) => el.tagName + "." + el.className),
+  );
+  expect(heavy, "nothing is bolder than Medium").toEqual([]);
 });
 
 test("legal pages are reachable", async ({ page }) => {
